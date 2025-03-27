@@ -1,46 +1,46 @@
 from rest_framework import serializers
 from django.utils import timezone
-from ..models import PurchaseDetail
+from ..models import PurchaseDetail, PurchaseHeader, Item
 
 
 class PurchaseDetailSerializer(serializers.ModelSerializer):
+    item_code = serializers.CharField(write_only=True)  # Untuk menerima item_code dari request
+
     class Meta:
         model = PurchaseDetail
-        fields = ['header', 'item', 'quantity', 'unit_price']
+        fields = ['item_code', 'quantity', 'unit_price']
 
     def create(self, validated_data):
-        purchase_detail = PurchaseDetail.objects.create(**validated_data)
+        """Ambil header_code dari context, cari item & header, lalu buat PurchaseDetail."""
+        header_code = self.context.get('header_code')  
 
-        item = purchase_detail.item
+        if not header_code:
+            raise serializers.ValidationError({"header_code": "Missing header_code in URL path."})
+
+        item_code = validated_data.pop("item_code")  
+
+        item = Item.objects.filter(code=item_code).first()
+        if not item:
+            raise serializers.ValidationError({"item_code": "Invalid item_code, item not found."})
+
+        header = PurchaseHeader.objects.filter(code=header_code).first()
+        if not header:
+            raise serializers.ValidationError({"header_code": "Invalid header_code, purchase header not found."})
+
+        purchase_detail = PurchaseDetail.objects.create(item=item, header=header, **validated_data)
+
         item.stock += purchase_detail.quantity
         item.balance += purchase_detail.quantity * purchase_detail.unit_price
         item.save()
 
         return purchase_detail
 
-    def update(self, instance, validated_data):
-        old_quantity = instance.quantity
-        old_unit_price = instance.unit_price
 
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-
-        instance.updated_at = timezone.now()
-        instance.updated_by = self.context['request'].user
-        instance.save()
-
-        item = instance.item
-        item.stock += instance.quantity - old_quantity
-        item.balance += (instance.quantity * instance.unit_price) - (old_quantity * old_unit_price)
-        item.save()
-
-        return instance
-
-
-class PurchaseDetailListDetailSerializer(serializers.ModelSerializer):
-    header_code = serializers.CharField(source='header.code', read_only=True)
-    item_name = serializers.CharField(source='item.name', read_only=True)
+class PurchaseDetailListSerializer(serializers.ModelSerializer):
+    item_code = serializers.CharField(source="item.code", read_only=True)
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    header_code = serializers.CharField(source="header.code", read_only=True)
 
     class Meta:
         model = PurchaseDetail
-        fields = ['header_code', 'item_name', 'quantity', 'unit_price', 'created_at', 'updated_at']
+        fields = ['header_code', 'item_code', 'item_name', 'quantity', 'unit_price', 'created_at', 'updated_at']
