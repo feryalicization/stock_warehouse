@@ -46,8 +46,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'backend',
     'rest_framework_simplejwt',
-    'django_extensions',
-    'drf_pdf',
+    'reportlab'
 ]
 
 REST_FRAMEWORK = {
