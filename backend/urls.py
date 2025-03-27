@@ -8,6 +8,7 @@ from .views.purchase_header import *
 from .views.sell_header import *
 from .views.purchase_detail import *
 from .views.sell_detail import *
+from .views.report import *
 
 
 schema_view = get_schema_view(
@@ -56,6 +57,9 @@ urlpatterns = [
     # sell detail
     path("sell/<str:header_code>/details/", SellDetailListView.as_view(), name="sell-detail-list"),
     path("sell/<str:header_code>/details", SellDetailCreateView.as_view(), name="sell-detail-create"),
+
+    # report
+    path('report/<str:item_code>/', ItemReportView.as_view(), name='item_report'),
 
 
     path('', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
