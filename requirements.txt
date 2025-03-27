@@ -6,3 +6,6 @@ psycopg2-binary==2.9.10
 djangorestframework-simplejwt==5.5.0
 setuptools==75.3.0
 django-filter==24.3
+reportlab==4.3.1
+django-extensions==3.2.3
+drf-pdf-0.2.0

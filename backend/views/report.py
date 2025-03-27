@@ -3,24 +3,45 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
+from django.http import HttpResponse
 from ..models import PurchaseDetail, SellDetail, Item
 from ..serializers.report import ReportResponseSerializer
-from django.db.models import Sum, F, Q
+from django.db.models import Sum
 from datetime import datetime
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 class ItemReportView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        responses={200: ReportResponseSerializer()},
-        manual_parameters=[
-            openapi.Parameter('start_date', openapi.IN_QUERY, description="Start date (YYYY-MM-DD)", type=openapi.TYPE_STRING, required=True),
-            openapi.Parameter('end_date', openapi.IN_QUERY, description="End date (YYYY-MM-DD)", type=openapi.TYPE_STRING, required=True),
-        ]
-    )
+    responses={
+        200: openapi.Response('File PDF atau JSON', openapi.Schema(
+            type=openapi.TYPE_FILE
+        ))
+    },
+    manual_parameters=[
+        openapi.Parameter(
+            'start_date', openapi.IN_QUERY, description="Start date (YYYY-MM-DD)", 
+            type=openapi.TYPE_STRING, required=True
+        ),
+        openapi.Parameter(
+            'end_date', openapi.IN_QUERY, description="End date (YYYY-MM-DD)", 
+            type=openapi.TYPE_STRING, required=True
+        ),
+        openapi.Parameter(
+            'format', openapi.IN_QUERY, description="Response format (json/pdf)", 
+            type=openapi.TYPE_STRING, required=False, enum=["json", "pdf"]
+        )
+    ]
+)
+
+
     def get(self, request, item_code, *args, **kwargs):
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
+        response_format = request.GET.get("format", "json")
 
         if not start_date or not end_date:
             return Response({"error": "Both start_date and end_date are required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -36,31 +57,16 @@ class ItemReportView(generics.RetrieveAPIView):
         except Item.DoesNotExist:
             return Response({"error": "Item not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        purchases = PurchaseDetail.objects.filter(
-            item=item,
-            header__date__range=[start_date, end_date]
-        ).order_by("header__date")
-
-        sales = SellDetail.objects.filter(
-            item=item,
-            header__date__range=[start_date, end_date]
-        ).order_by("header__date")
+        purchases = PurchaseDetail.objects.filter(item=item, header__date__range=[start_date, end_date])
+        sales = SellDetail.objects.filter(item=item, header__date__range=[start_date, end_date])
 
         transactions = []
-        stock_qty = []
-        stock_price = []
-        stock_total = []
         balance_qty = 0
         balance = 0
 
         for purchase in purchases:
-            stock_qty.append(purchase.quantity)
-            stock_price.append(purchase.unit_price)
-            stock_total.append(purchase.quantity * purchase.unit_price)
-
             balance_qty += purchase.quantity
             balance += purchase.quantity * purchase.unit_price
-
             transactions.append({
                 "date": purchase.header.date,
                 "description": purchase.header.description,
@@ -71,9 +77,6 @@ class ItemReportView(generics.RetrieveAPIView):
                 "out_qty": 0,
                 "out_price": 0,
                 "out_total": 0,
-                "stock_qty": stock_qty.copy(),
-                "stock_price": stock_price.copy(),
-                "stock_total": stock_total.copy(),
                 "balance_qty": balance_qty,
                 "balance": balance
             })
@@ -81,18 +84,9 @@ class ItemReportView(generics.RetrieveAPIView):
         for sale in sales:
             if balance_qty < sale.quantity:
                 return Response({"error": "Not enough stock for sale"}, status=status.HTTP_400_BAD_REQUEST)
-
-            out_price = stock_price[0] if stock_price else 0
-            out_total = sale.quantity * out_price
-
-            stock_qty[0] -= sale.quantity
-            if stock_qty[0] == 0:
-                stock_qty.pop(0)
-                stock_price.pop(0)
-                stock_total.pop(0)
-
+            
             balance_qty -= sale.quantity
-            balance -= out_total
+            balance -= sale.quantity * (balance / balance_qty if balance_qty > 0 else 0)
 
             transactions.append({
                 "date": sale.header.date,
@@ -102,18 +96,15 @@ class ItemReportView(generics.RetrieveAPIView):
                 "in_price": 0,
                 "in_total": 0,
                 "out_qty": sale.quantity,
-                "out_price": out_price,
-                "out_total": out_total,
-                "stock_qty": stock_qty.copy(),
-                "stock_price": stock_price.copy(),
-                "stock_total": stock_total.copy(),
+                "out_price": balance / balance_qty if balance_qty > 0 else 0,
+                "out_total": sale.quantity * (balance / balance_qty if balance_qty > 0 else 0),
                 "balance_qty": balance_qty,
                 "balance": balance
             })
 
         summary = {
-            "in_qty": sum(p.quantity for p in purchases),
-            "out_qty": sum(s.quantity for s in sales),
+            "in_qty": purchases.aggregate(Sum('quantity'))['quantity__sum'] or 0,
+            "out_qty": sales.aggregate(Sum('quantity'))['quantity__sum'] or 0,
             "balance_qty": balance_qty,
             "balance": balance
         }
@@ -125,5 +116,19 @@ class ItemReportView(generics.RetrieveAPIView):
             "unit": item.unit,
             "summary": summary
         }
+
+        if response_format == "pdf":
+            buffer = BytesIO()
+            pdf = canvas.Canvas(buffer, pagesize=letter)
+            pdf.drawString(100, 750, f"Report for {item.name} ({item.code})")
+            y_position = 730
+            for transaction in transactions:
+                pdf.drawString(100, y_position, str(transaction))
+                y_position -= 20
+            pdf.save()
+            buffer.seek(0)
+            response = HttpResponse(buffer, content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="report_{item_code}.pdf"'
+            return response
 
         return Response({"result": response_data}, status=status.HTTP_200_OK)
